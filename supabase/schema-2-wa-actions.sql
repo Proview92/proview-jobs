@@ -127,3 +127,29 @@ begin
 end $$;
 revoke all on function public.pj_wa_action(jsonb) from public, anon, authenticated;
 grant execute on function public.pj_wa_action(jsonb) to service_role;
+
+-- Which job should a photo sent on WhatsApp go on? The one this number is adding details to,
+-- otherwise the job it created or updated by WhatsApp in the last 10 minutes. Server only.
+create function public.pj_wa_photo_target(p_phone text) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare v_job uuid; v_ref integer; v_pending boolean := false;
+begin
+  if p_phone is null or not (
+       exists (select 1 from public.pj_people where phone = p_phone and active and role = 'manager')
+    or exists (select 1 from public.pj_wa_numbers where phone = p_phone and can_create)) then
+    return jsonb_build_object('ok', false, 'reason', 'not_allowed');
+  end if;
+  select job_id into v_job from public.pj_wa_pending where phone = p_phone and expires_at > now();
+  if v_job is not null then
+    v_pending := true;
+  else
+    select l.job_id into v_job from public.pj_wa_log l
+      where l.from_phone = p_phone and l.job_id is not null and l.created_at > now() - interval '10 minutes'
+      order by l.created_at desc limit 1;
+  end if;
+  select ref into v_ref from public.pj_jobs where id = v_job;
+  if v_ref is null then return jsonb_build_object('ok', false, 'reason', 'none'); end if;
+  return jsonb_build_object('ok', true, 'job_id', v_job, 'ref', v_ref, 'pending', v_pending);
+end $$;
+revoke all on function public.pj_wa_photo_target(text) from public, anon, authenticated;
+grant execute on function public.pj_wa_photo_target(text) to service_role;

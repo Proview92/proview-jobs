@@ -201,6 +201,88 @@ async function onLooseText(env: Env, f: Fetch, numberId: string, from: string, w
   if (res.ok) await notify(env, f, String(res.job_id), { exclude: [from], numberId });
 }
 
+/* ---------- photos sent or forwarded on WhatsApp ---------- */
+const PHOTO_TYPES: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+/** Fetch the photo from WhatsApp and file it under the job, exactly like a photo added in the app. */
+export async function savePhoto(env: Env, f: Fetch, mediaId: string, jobId: string): Promise<boolean> {
+  if (!env.WA_ACCESS_TOKEN || !/^[\w.-]{1,120}$/.test(mediaId) || !UUID.test(jobId)) return false;
+  try {
+    const auth = { Authorization: "Bearer " + env.WA_ACCESS_TOKEN };
+    const meta = await f("https://graph.facebook.com/" + (env.WA_GRAPH_VERSION || "v24.0") + "/" + mediaId, { headers: auth });
+    if (!meta.ok) { console.error("whatsapp photo lookup failed", meta.status, (await meta.text().catch(() => "")).slice(0, 200)); return false; }
+    const info = await meta.json();
+    const mime = String(info?.mime_type || "").split(";")[0].trim();
+    const ext = PHOTO_TYPES[mime];
+    // the download address must be Meta's own before the token is sent to it
+    if (!ext || !info?.url || !/(^|\.)(fbsbx\.com|facebook\.com|fbcdn\.net|whatsapp\.net)$/.test(new URL(String(info.url)).hostname)) return false;
+    const bin = await f(String(info.url), { headers: auth });
+    if (!bin.ok) { console.error("whatsapp photo download failed", bin.status); return false; }
+    const buf = await bin.arrayBuffer();
+    if (!buf.byteLength || buf.byteLength > 8 * 1024 * 1024) return false;
+    const path = jobId + "/" + crypto.randomUUID() + "." + ext;
+    const up = await f(env.SUPABASE_URL + "/storage/v1/object/job-photos/" + path, {
+      method: "POST", headers: { apikey: env.SERVICE_KEY, Authorization: "Bearer " + env.SERVICE_KEY, "Content-Type": mime }, body: buf });
+    if (!up.ok) { console.error("photo store failed", up.status, (await up.text().catch(() => "")).slice(0, 200)); return false; }
+    const ins = await f(env.SUPABASE_URL + "/rest/v1/pj_job_photos", { method: "POST", headers: { ...svc(env), Prefer: "return=minimal" }, body: JSON.stringify({ job_id: jobId, path }) });
+    if (!ins.ok) console.error("photo record failed", ins.status, (await ins.text().catch(() => "")).slice(0, 200));
+    return ins.ok;
+  } catch (e) { console.error("photo save failed", String(e).slice(0, 200)); return false; }
+}
+async function onPhoto(env: Env, f: Fetch, numberId: string, from: string, m: any): Promise<void> {
+  const caption = String(m?.image?.caption || "").trim();
+  const mediaId = String(m?.image?.id || "");
+  let target: Record<string, any> = { ok: false, reason: "error" };
+  try {
+    const r = await f(env.SUPABASE_URL + "/rest/v1/rpc/pj_wa_photo_target", { method: "POST", headers: svc(env), body: JSON.stringify({ p_phone: from }) });
+    if (r.ok) target = (await r.json()) || target;
+  } catch (_) { /* treated as not allowed */ }
+  if (!target.ok && target.reason !== "none") return; // not an approved number: nothing fetched, nothing stored
+  const any = !!(await rows(env, f, "pj_settings?select=wa_any_message&limit=1"))[0]?.wa_any_message;
+  const good = "\n\ud83d\udcce Photo attached", bad = "\n\u26a0\ufe0f The photo could not be saved. Add it in the app.";
+
+  // 1) adding details to a job: the caption is details, the photo goes on that job
+  if (target.ok && target.pending) {
+    let summary = "";
+    if (caption) {
+      const extra = parseJob(caption, await todayIn(env, f), false)!;
+      const r = await action(env, f, { ...extra, from_phone: from, action: "details_apply", wa_id: String(m.id || ""), body: caption });
+      if (r.ok) summary = updateText(r);
+    }
+    const saved = await savePhoto(env, f, mediaId, String(target.job_id));
+    if (summary) await sendMenu(env, f, numberId, from, summary + (saved ? good : bad), String(target.job_id));
+    else await sendText(env, f, numberId, from, saved ? "\ud83d\udcce Photo added to " + jref(target.ref) : "\u26a0\ufe0f The photo for " + jref(target.ref) + " could not be saved. Add it in the app.");
+    return;
+  }
+  // 2) a caption that is a job (or any caption, when every message is a job): new job with the photo on it
+  if (caption && (isJobMessage(caption) || (any && caption.length >= 3 && !SMALL_TALK.test(caption)))) {
+    const job = parseJob(caption, await todayIn(env, f), false)!;
+    if (job.title) {
+      const res = await ingest(env, f, { ...job, wa_id: m.id, from_phone: from, body: caption, source: "whatsapp" });
+      const reply = replyFor(res);
+      if (res.ok) {
+        const saved = await savePhoto(env, f, mediaId, String(res.job_id));
+        await sendMenu(env, f, numberId, from, reply + (saved ? good : bad), String(res.job_id));
+        await notify(env, f, String(res.job_id), { exclude: [from], numberId });
+      } else if (reply) await sendText(env, f, numberId, from, reply);
+      return;
+    }
+  }
+  // 3) no caption: it belongs with the job this number sent a moment ago
+  if (target.ok) {
+    const saved = await savePhoto(env, f, mediaId, String(target.job_id));
+    await sendText(env, f, numberId, from, saved ? "\ud83d\udcce Photo added to " + jref(target.ref) : "\u26a0\ufe0f The photo for " + jref(target.ref) + " could not be saved. Add it in the app.");
+    return;
+  }
+  // 4) a photo on its own, when every message is a job: start a job to hang it on
+  if (any) {
+    const res = await ingest(env, f, { title: "Photo sent on WhatsApp", description: "", tasks: [], parts: [], wa_id: m.id, from_phone: from, body: "(photo)", source: "whatsapp" });
+    if (!res.ok) return;
+    const saved = await savePhoto(env, f, mediaId, String(res.job_id));
+    await sendMenu(env, f, numberId, from, replyFor(res) + (saved ? good : bad) + "\nTap Add details to say what it is.", String(res.job_id));
+    await notify(env, f, String(res.job_id), { exclude: [from], numberId });
+  }
+}
+
 /* ---------- job notices: "receive jobs on WhatsApp" ---------- */
 export interface Notice { text: string; params: string[] }
 const oneLine = (s: unknown, n: number) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
@@ -265,9 +347,10 @@ async function onWebhook(req: Request, env: Env, f: Fetch): Promise<Response> {
           for (const m of value.messages || []) {
             const from = String(m.from || "").replace(/\D/g, "");
             if (m?.type === "interactive") { await onInteractive(env, f, numberId, from, m); continue; }
-            // text, or the caption of a forwarded photo, video or document (the file itself is not saved)
+            if (m?.type === "image") { await onPhoto(env, f, numberId, from, m); continue; }
+            // text, or the caption of a forwarded video or document (those files are not saved; photos are)
             let body = m?.type === "text" ? String(m?.text?.body || "") : String(m?.[m?.type]?.caption || "");
-            if (body && m?.type !== "text") body += "\nNote: a " + (m.type === "image" ? "photo" : m.type) + " came with this message on WhatsApp and is not saved here.";
+            if (body && m?.type !== "text") body += "\nNote: a " + m.type + " came with this message on WhatsApp and is not saved here.";
             if (!body) continue;
             if (!isJobMessage(body)) { await onLooseText(env, f, numberId, from, String(m.id || ""), body); continue; }
             today = today || await todayIn(env, f);

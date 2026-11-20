@@ -1,14 +1,14 @@
 // Run: node tests/handler.test.mjs   (no network: Supabase and WhatsApp are stand-ins)
 import assert from "node:assert/strict";
-import { handle, sign, replyFor, jobNotice, updateText } from "../supabase/functions/whatsapp-webhook/handler.ts";
+import { handle, sign, replyFor, jobNotice, updateText, savePhoto } from "../supabase/functions/whatsapp-webhook/handler.ts";
 
 const env = { SUPABASE_URL: "https://x.supabase.co", SERVICE_KEY: "svc", WA_VERIFY_TOKEN: "letmein", WA_APP_SECRET: "shh", WA_ACCESS_TOKEN: "tok" };
 const JOB = "22222222-2222-2222-2222-222222222222";
 const PERSON = "33333333-3333-3333-3333-333333333333";
-function world({ manager = true, userOk = true, pending = false, buttonsFail = false, any = false } = {}) {
+function world({ manager = true, userOk = true, pending = false, buttonsFail = false, any = false, target = null, mime = "image/jpeg", mediaUrl = "https://lookaside.fbsbx.com/whatsapp_business/attachments/?mid=1" } = {}) {
   const calls = [];
   const f = async (url, init = {}) => {
-    const body = init.body ? JSON.parse(init.body) : null;
+    const body = typeof init.body === "string" ? JSON.parse(init.body) : null;
     calls.push({ url: String(url), body, headers: init.headers || {} });
     const j = (o, status = 200) => new Response(JSON.stringify(o), { status });
     if (String(url).includes("/rest/v1/pj_settings")) return j([{ timezone: "Asia/Dubai", wa_any_message: any }]);
@@ -28,6 +28,11 @@ function world({ manager = true, userOk = true, pending = false, buttonsFail = f
       if (p.action === "details_start") return j({ ...base, action: "details_start" });
       if (p.action === "details_apply") return j({ ...base, action: "details_apply", due_date: p.due_date, tasks: p.tasks.length, parts: p.parts.length, assign_unmatched: false });
     }
+    if (String(url).includes("/rpc/pj_wa_photo_target")) return j(body.p_phone !== "971500000001" ? { ok: false, reason: "not_allowed" } : pending ? { ok: true, job_id: JOB, ref: 12, pending: true } : target ? { ok: true, job_id: JOB, ref: 12, pending: false } : { ok: false, reason: "none" });
+    if (String(url).includes("graph.facebook.com") && String(url).endsWith("/MEDIA1")) return j({ url: mediaUrl, mime_type: mime });
+    if (String(url).startsWith(mediaUrl)) return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+    if (String(url).includes("/storage/v1/object/job-photos/")) return j({ Key: "ok" });
+    if (String(url).includes("/rest/v1/pj_job_photos")) return new Response(null, { status: 201 });
     if (String(url).includes("graph.facebook.com") && buttonsFail && body.interactive?.type === "button") return j({ error: { message: "nope" } }, 400);
     if (String(url).includes("/auth/v1/user")) return userOk ? j({ id: "11111111-1111-1111-1111-111111111111" }) : j({}, 401);
     if (String(url).includes("/rest/v1/pj_people")) return j(manager ? [{ id: "mgr-1" }] : []);
@@ -100,12 +105,10 @@ let n = 0;
   const long = "Hi can someone come out to the shop on Al Wasl Road because the card machine keeps dropping the connection every afternoon and customers are walking out";
   w = world({ any: true }); await post(waBody(long), w.f);
   assert.ok(ing(w)[0].title.length <= 91 && ing(w)[0].title.endsWith("\u2026")); assert.equal(ing(w)[0].description, long);
-  // a forwarded photo with a caption makes a job from the caption and says the photo was not saved
-  const photo = JSON.stringify({ object: "whatsapp_business_account", entry: [{ id: "W", changes: [{ field: "messages", value: { metadata: { phone_number_id: "PNID" }, messages: [{ from: "971500000001", id: "wamid.p", type: "image", image: { id: "M1", caption: "Broken camera at gate 2" } }] } }] }] });
-  w = world({ any: true }); await post(photo, w.f);
-  assert.equal(ing(w)[0].title, "Broken camera at gate 2"); assert.match(ing(w)[0].description, /a photo came with this message on WhatsApp and is not saved here/);
-  // a photo with no caption has nothing to make a job from
-  w = world({ any: true }); await post(photo.replace(', "caption": "Broken camera at gate 2"', "").replace(',"caption":"Broken camera at gate 2"', ""), w.f); assert.equal(ing(w).length, 0);
+  // a forwarded video with a caption makes a job from the caption and says the file was not saved
+  const video = JSON.stringify({ object: "whatsapp_business_account", entry: [{ id: "W", changes: [{ field: "messages", value: { metadata: { phone_number_id: "PNID" }, messages: [{ from: "971500000001", id: "wamid.v", type: "video", video: { id: "V1", caption: "Walkthrough of gate 2" } }] } }] }] });
+  w = world({ any: true }); await post(video, w.f);
+  assert.equal(ing(w)[0].title, "Walkthrough of gate 2"); assert.match(ing(w)[0].description, /a video came with this message on WhatsApp and is not saved here/);
   // the Job prefix still works and is still stripped
   w = world({ any: true }); await post(waBody("Job: Install cameras"), w.f); assert.equal(ing(w)[0].title, "Install cameras"); n++; }
 
@@ -186,6 +189,42 @@ let n = 0;
   w = world(); await post(tap("a:not-a-job:" + PERSON, "list_reply"), w.f); assert.equal(w.calls.length, 0);
   w = world(); await post(tap("a:" + JOB + ":'; drop table", "list_reply"), w.f); assert.equal(w.calls.length, 0);
   assert.match(updateText({ ref: 3, title: "T", assignee: null, priority: "normal", assign_unmatched: true, assign_asked: "bob" }), /J-0003 updated\n\*T\*\nNot assigned yet\n.*could not match "bob"/); n++; }
+
+// photos sent or forwarded on WhatsApp are filed on the job
+{ const pic = (caption, from = "971500000001") => JSON.stringify({ object: "whatsapp_business_account", entry: [{ id: "W", changes: [{ field: "messages", value: { metadata: { phone_number_id: "PNID" },
+    messages: [{ from, id: "wamid.p", type: "image", image: { id: "MEDIA1", ...(caption ? { caption } : {}) } }] } }] }] });
+  const ing = (w) => w.calls.filter((c) => c.url.includes("pj_wa_ingest")).map((c) => c.body.p);
+  const stored = (w) => w.calls.filter((c) => c.url.includes("/storage/v1/object/job-photos/")).map((c) => c.url.split("/job-photos/")[1]);
+  const rec = (w) => w.calls.filter((c) => c.url.includes("/rest/v1/pj_job_photos")).map((c) => c.body);
+  const sent = (w) => w.calls.filter((c) => c.url.includes("graph.facebook.com") && c.url.endsWith("/messages")).map((c) => c.body);
+  // photo with a caption: new job from the caption, photo filed under it
+  let w = world({ any: true }); await post(pic("Broken camera at gate 2"), w.f);
+  assert.equal(ing(w)[0].title, "Broken camera at gate 2"); assert.equal(ing(w)[0].description, "");
+  assert.equal(stored(w).length, 1); assert.match(stored(w)[0], new RegExp("^" + JOB + "/[0-9a-f-]{36}\\.jpg$")); assert.deepEqual(rec(w), [{ job_id: JOB, path: stored(w)[0] }]);
+  assert.match(sent(w)[0].interactive.body.text, /Job J-0012 created[\s\S]*Photo attached/);
+  // the token only goes to Meta: the photo download carried it, the storage upload did not
+  const dl = w.calls.find((c) => c.url.startsWith("https://lookaside.fbsbx.com")); assert.equal(dl.headers.Authorization, "Bearer tok");
+  const up = w.calls.find((c) => c.url.includes("/storage/v1/")); assert.equal(up.headers.Authorization, "Bearer svc"); assert.equal(up.headers["Content-Type"], "image/jpeg");
+  // photo with no caption right after a job: added to that job
+  w = world({ any: true, target: true }); await post(pic(""), w.f);
+  assert.equal(ing(w).length, 0); assert.equal(stored(w).length, 1); assert.match(sent(w)[0].text.body, /Photo added to J-0012/);
+  // photo while adding details: goes on that job, caption becomes details
+  w = world({ pending: true }); await post(pic("Due: tomorrow"), w.f);
+  assert.equal(ing(w).length, 0); assert.equal(stored(w).length, 1); assert.match(sent(w)[0].interactive.body.text, /J-0012 updated[\s\S]*Photo attached/);
+  // photo on its own with nothing recent: a job to hang it on (only when every message is a job)
+  w = world({ any: true }); await post(pic(""), w.f);
+  assert.equal(ing(w)[0].title, "Photo sent on WhatsApp"); assert.equal(stored(w).length, 1); assert.match(sent(w)[0].interactive.body.text, /Photo attached\nTap Add details/);
+  w = world({ any: false }); await post(pic(""), w.f); assert.equal(ing(w).length, 0); assert.equal(stored(w).length, 0); assert.equal(sent(w).length, 0);
+  // with the switch off, a caption must start with Job
+  w = world({ any: false }); await post(pic("Broken camera"), w.f); assert.equal(ing(w).length, 0);
+  w = world({ any: false }); await post(pic("Job: Broken camera"), w.f); assert.equal(ing(w)[0].title, "Broken camera"); assert.equal(stored(w).length, 1);
+  // a number that is not approved: the photo is never fetched
+  w = world({ any: true }); await post(pic("Free stuff", "971599999999"), w.f);
+  assert.ok(!w.calls.some((c) => c.url.includes("graph.facebook.com") || c.url.includes("/storage/") || c.url.includes("pj_wa_ingest")));
+  // a file that is not a photo, or a download address that is not Meta's, is refused and the reply says so
+  w = world({ any: true, mime: "application/pdf" }); await post(pic("Spec sheet"), w.f); assert.equal(stored(w).length, 0); assert.match(sent(w)[0].interactive.body.text, /could not be saved/);
+  w = world({ any: true, mediaUrl: "https://evil.example.com/x" }); await post(pic("Camera"), w.f); assert.equal(stored(w).length, 0); assert.ok(!w.calls.some((c) => c.url.startsWith("https://evil.example.com")));
+  assert.equal(await savePhoto(env, w.f, "../etc", JOB), false); assert.equal(await savePhoto(env, w.f, "MEDIA1", "not-a-job"), false); n++; }
 
 assert.equal(replyFor({ ok: false, reason: "duplicate" }), null);
 assert.match(replyFor({ ok: true, ref: 3, title: "T", assignee: null, assign_unmatched: true, assign_asked: "bob" }), /Not assigned yet[\s\S]*could not match "bob"/);

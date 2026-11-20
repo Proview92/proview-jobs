@@ -20,7 +20,7 @@ The database enforces this, not just the screen.
 2. **Everyone else:** a manager adds them under Team with their email. They open the app, choose "First time? Create your account" and use that same email.
 
 ## WhatsApp
-With **Every message is a job** switched on (the default, on the app's WhatsApp page), any text typed or forwarded to the jobs line from an approved number creates a job; short replies such as "ok" or "thanks" are ignored. Switched off, a message must start with `Job`, `#job` or `New job`. Approved numbers are those on the Numbers list plus the WhatsApp number of each active manager. Messages from any other number are ignored and never stored. A forwarded photo, video or document creates a job from its caption; the file itself is not saved.
+With **Every message is a job** switched on (the default, on the app's WhatsApp page), any text typed or forwarded to the jobs line from an approved number creates a job; short replies such as "ok" or "thanks" are ignored. Switched off, a message must start with `Job`, `#job` or `New job`. Approved numbers are those on the Numbers list plus the WhatsApp number of each active manager. Messages from any other number are ignored and never stored. A photo sent or forwarded to the jobs line is saved on the job: with a caption it starts a new job, without one it joins the job that number sent in the last 10 minutes (or the one it is adding details to). Videos and documents create a job from their caption, but those files are not saved.
 
     Job: Install 4 cameras at Al Noor Cafe
     Customer: Ahmed 050 123 4567
