@@ -1,6 +1,6 @@
 // Run: node tests/handler.test.mjs   (no network: Supabase and WhatsApp are stand-ins)
 import assert from "node:assert/strict";
-import { handle, sign, replyFor, jobNotice, updateText, savePhoto } from "../supabase/functions/whatsapp-webhook/handler.ts";
+import { handle, sign, replyFor, jobNotice, updateText, savePhoto, AUTO_REPLY } from "../supabase/functions/whatsapp-webhook/handler.ts";
 
 const env = { SUPABASE_URL: "https://x.supabase.co", SERVICE_KEY: "svc", WA_VERIFY_TOKEN: "letmein", WA_APP_SECRET: "shh", WA_ACCESS_TOKEN: "tok" };
 const JOB = "22222222-2222-2222-2222-222222222222";
@@ -226,9 +226,16 @@ let n = 0;
   w = world({ any: true, mediaUrl: "https://evil.example.com/x" }); await post(pic("Camera"), w.f); assert.equal(stored(w).length, 0); assert.ok(!w.calls.some((c) => c.url.startsWith("https://evil.example.com")));
   assert.equal(await savePhoto(env, w.f, "../etc", JOB), false); assert.equal(await savePhoto(env, w.f, "MEDIA1", "not-a-job"), false); n++; }
 
+// a phone's auto-reply is ignored everywhere: not a job, not details, not looked up, not stored
+{ const auto = "(AUTOMATED MESSAGE)\n\nIF THE MATTER IS *URGENT*.\nPLEASE CALL THE OFFICE\n\nTHANKS";
+  for (const o of [{ any: true }, { pending: true }, { any: true, target: true }]) { const w = world(o); const r = await post(waBody(auto), w.f); assert.equal(r.status, 200); assert.equal(w.calls.length, 0, JSON.stringify(o)); }
+  for (const t of ["(automated response) Back Monday", "Thanks! (Automated Response)", "(auto-reply) away", "Automatic reply: out of office", "*(Automated message)*"]) assert.ok(AUTO_REPLY.test(t), t);
+  for (const t of ["Fix the automated gate response at site 2", "Install automatic doors", "Job: automated message board repair"]) assert.ok(!AUTO_REPLY.test(t), t);
+  const w = world({ any: true }); await post(waBody("Fix the automated gate response at site 2"), w.f); assert.ok(w.calls.some((c) => c.url.includes("pj_wa_ingest"))); n++; }
+
 assert.equal(replyFor({ ok: false, reason: "duplicate" }), null);
 assert.match(replyFor({ ok: true, ref: 3, title: "T", assignee: null, assign_unmatched: true, assign_asked: "bob" }), /Not assigned yet[\s\S]*could not match "bob"/);
 console.log("handler:", n, "groups passed");
 { const { selfTest } = await import("../supabase/functions/whatsapp-webhook/handler.ts");
-  assert.equal(selfTest(), "selftest ok 12");
-  const r = await handle(new Request("https://fn/?selftest=1"), env); assert.equal(await r.text(), "selftest ok 12"); console.log("selftest ok"); }
+  assert.equal(selfTest(), "selftest ok 13");
+  const r = await handle(new Request("https://fn/?selftest=1"), env); assert.equal(await r.text(), "selftest ok 13"); console.log("selftest ok"); }

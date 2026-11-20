@@ -170,6 +170,8 @@ async function onInteractive(env: Env, f: Fetch, numberId: string, from: string,
     if (r.ok) await sendMenu(env, f, numberId, from, updateText(r), jobId);
   }
 }
+// A phone's own auto-reply (away or greeting message) is never a job and never details.
+export const AUTO_REPLY = /\(\s*auto(?:mated|matic)?[\s-]*(?:message|response|reply)\s*\)|^\s*auto(?:mated|matic)?[\s-]*(?:message|response|reply)\b/i;
 // Replies that are plainly not a job, so "ok" or "thanks" to the jobs line does not create one.
 const SMALL_TALK = /^(ok(ay)?|k|thanks?( you)?|thank you|thx|ty|cheers|yes|no|yep|nope|hi|hello|hey|done|great|cool|noted|will do|got it|perfect|[\u{1F44D}\u{1F64F}\u{1F44C}\u{2705}\u{2764}\u{FE0F}\s]+)[.!\s]*$/iu;
 /** A message that does not start with "Job". */
@@ -230,6 +232,7 @@ export async function savePhoto(env: Env, f: Fetch, mediaId: string, jobId: stri
 }
 async function onPhoto(env: Env, f: Fetch, numberId: string, from: string, m: any): Promise<void> {
   const caption = String(m?.image?.caption || "").trim();
+  if (AUTO_REPLY.test(caption)) return;
   const mediaId = String(m?.image?.id || "");
   let target: Record<string, any> = { ok: false, reason: "error" };
   try {
@@ -351,7 +354,7 @@ async function onWebhook(req: Request, env: Env, f: Fetch): Promise<Response> {
             // text, or the caption of a forwarded video or document (those files are not saved; photos are)
             let body = m?.type === "text" ? String(m?.text?.body || "") : String(m?.[m?.type]?.caption || "");
             if (body && m?.type !== "text") body += "\nNote: a " + m.type + " came with this message on WhatsApp and is not saved here.";
-            if (!body) continue;
+            if (!body || AUTO_REPLY.test(body)) continue;
             if (!isJobMessage(body)) { await onLooseText(env, f, numberId, from, String(m.id || ""), body); continue; }
             today = today || await todayIn(env, f);
             const job = parseJob(body, today)!;
@@ -437,7 +440,8 @@ export function selfTest(): string {
   eq("list", [k.title, k.tasks, k.due_date], ["Replace printer", ["remove old", "fit new"], "2026-11-25"]);
   eq("chat", [isJobMessage("Good job today"), isJobMessage("jobs tomorrow?"), isJobMessage("New job - x")], [false, false, true]);
   eq("friday", parseJob("job x\ndue: fri", T)!.due_date, "2026-11-27");
-  return fails.length ? "selftest FAILED " + fails.join("; ") : "selftest ok 12";
+  eq("auto", [AUTO_REPLY.test("(AUTOMATED MESSAGE)\nCall the office"), AUTO_REPLY.test("Thanks (automated response)"), AUTO_REPLY.test("Fix the automated gate")], [true, true, false]);
+  return fails.length ? "selftest FAILED " + fails.join("; ") : "selftest ok 13";
 }
 
 export async function handle(req: Request, env: Env, f: Fetch = fetch): Promise<Response> {
