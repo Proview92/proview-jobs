@@ -20,7 +20,8 @@ comment on column public.pj_people.phone is 'WhatsApp number: digits only, with 
 create table public.pj_settings (
   id boolean primary key default true check (id),
   timezone text not null default 'Europe/London',
-  business_name text not null default 'Proview Tech'
+  business_name text not null default 'Proview Tech',
+  wa_any_message boolean not null default true  -- any message from an approved number is a job (no "Job" prefix needed)
 );
 insert into public.pj_settings default values;
 

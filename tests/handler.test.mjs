@@ -5,13 +5,13 @@ import { handle, sign, replyFor, jobNotice, updateText } from "../supabase/funct
 const env = { SUPABASE_URL: "https://x.supabase.co", SERVICE_KEY: "svc", WA_VERIFY_TOKEN: "letmein", WA_APP_SECRET: "shh", WA_ACCESS_TOKEN: "tok" };
 const JOB = "22222222-2222-2222-2222-222222222222";
 const PERSON = "33333333-3333-3333-3333-333333333333";
-function world({ manager = true, userOk = true, pending = false, buttonsFail = false } = {}) {
+function world({ manager = true, userOk = true, pending = false, buttonsFail = false, any = false } = {}) {
   const calls = [];
   const f = async (url, init = {}) => {
     const body = init.body ? JSON.parse(init.body) : null;
     calls.push({ url: String(url), body, headers: init.headers || {} });
     const j = (o, status = 200) => new Response(JSON.stringify(o), { status });
-    if (String(url).includes("/rest/v1/pj_settings")) return j([{ timezone: "Asia/Dubai" }]);
+    if (String(url).includes("/rest/v1/pj_settings")) return j([{ timezone: "Asia/Dubai", wa_any_message: any }]);
     if (String(url).includes("/rpc/pj_wa_ingest")) {
       const p = body.p;
       if (!p.manager_id && !p.trusted && p.from_phone !== "971500000001") return j({ ok: false, reason: "not_manager" });
@@ -81,7 +81,33 @@ let n = 0;
 
 // ordinary chat is never stored or answered
 { const w = world(); const r = await post(waBody("Thanks, see you tomorrow"), w.f);
-  assert.equal(r.status, 200); assert.deepEqual(w.calls.map((c) => c.body && c.body.p), [{ from_phone: "971500000001", action: "pending" }]); n++; }
+  assert.equal(r.status, 200); assert.ok(!w.calls.some((c) => c.url.includes("pj_wa_ingest") || c.url.includes("graph.facebook.com"))); n++; }
+
+// "every message is a job": no prefix needed from an approved number
+{ const ing = (w) => w.calls.filter((c) => c.url.includes("pj_wa_ingest")).map((c) => c.body.p);
+  const sent = (w) => w.calls.filter((c) => c.url.includes("graph.facebook.com")).map((c) => c.body);
+  let w = world({ any: true }); await post(waBody("Fix the till at Bella's\nCustomer: Bella 050 111 2222\nDue: tomorrow"), w.f);
+  assert.equal(ing(w).length, 1); assert.equal(ing(w)[0].title, "Fix the till at Bella's"); assert.equal(ing(w)[0].customer_name, "Bella"); assert.equal(ing(w)[0].wa_id, "wamid.1");
+  assert.equal(sent(w)[0].interactive.type, "button"); assert.match(sent(w)[0].interactive.body.text, /Job J-0012 created/);
+  // switched off: nothing happens
+  w = world({ any: false }); await post(waBody("Fix the till at Bella's"), w.f); assert.equal(ing(w).length, 0); assert.equal(sent(w).length, 0);
+  // small talk is not a job
+  for (const t of ["ok", "Thanks!", "thank you", "\u{1F44D}", "hi", "yes", "Got it."]) { w = world({ any: true }); await post(waBody(t), w.f); assert.equal(ing(w).length, 0, t); }
+  // a number that is not approved is not read further and nothing is stored or sent
+  w = world({ any: true }); await post(waBody("Free cameras please", "971599999999"), w.f);
+  assert.equal(ing(w).length, 0); assert.equal(sent(w).length, 0); assert.ok(!w.calls.some((c) => c.url.includes("pj_settings")));
+  // one long forwarded paragraph: short headline, full text kept
+  const long = "Hi can someone come out to the shop on Al Wasl Road because the card machine keeps dropping the connection every afternoon and customers are walking out";
+  w = world({ any: true }); await post(waBody(long), w.f);
+  assert.ok(ing(w)[0].title.length <= 91 && ing(w)[0].title.endsWith("\u2026")); assert.equal(ing(w)[0].description, long);
+  // a forwarded photo with a caption makes a job from the caption and says the photo was not saved
+  const photo = JSON.stringify({ object: "whatsapp_business_account", entry: [{ id: "W", changes: [{ field: "messages", value: { metadata: { phone_number_id: "PNID" }, messages: [{ from: "971500000001", id: "wamid.p", type: "image", image: { id: "M1", caption: "Broken camera at gate 2" } }] } }] }] });
+  w = world({ any: true }); await post(photo, w.f);
+  assert.equal(ing(w)[0].title, "Broken camera at gate 2"); assert.match(ing(w)[0].description, /a photo came with this message on WhatsApp and is not saved here/);
+  // a photo with no caption has nothing to make a job from
+  w = world({ any: true }); await post(photo.replace(', "caption": "Broken camera at gate 2"', "").replace(',"caption":"Broken camera at gate 2"', ""), w.f); assert.equal(ing(w).length, 0);
+  // the Job prefix still works and is still stripped
+  w = world({ any: true }); await post(waBody("Job: Install cameras"), w.f); assert.equal(ing(w)[0].title, "Install cameras"); n++; }
 
 // someone who is not a manager gets no job and no reply
 { const w = world(); await post(waBody("Job: free cameras please", "971599999999"), w.f);

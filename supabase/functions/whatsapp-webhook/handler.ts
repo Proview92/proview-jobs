@@ -170,15 +170,35 @@ async function onInteractive(env: Env, f: Fetch, numberId: string, from: string,
     if (r.ok) await sendMenu(env, f, numberId, from, updateText(r), jobId);
   }
 }
-/** A message that does not start with "Job": only used when this number tapped Add details in the last 30 minutes. */
+// Replies that are plainly not a job, so "ok" or "thanks" to the jobs line does not create one.
+const SMALL_TALK = /^(ok(ay)?|k|thanks?( you)?|thank you|thx|ty|cheers|yes|no|yep|nope|hi|hello|hey|done|great|cool|noted|will do|got it|perfect|[\u{1F44D}\u{1F64F}\u{1F44C}\u{2705}\u{2764}\u{FE0F}\s]+)[.!\s]*$/iu;
+/** A message that does not start with "Job". */
 async function onLooseText(env: Env, f: Fetch, numberId: string, from: string, waId: string, body: string): Promise<void> {
   const pend = await action(env, f, { from_phone: from, action: "pending" });
-  if (!pend.ok) return; // ordinary chat: not read any further, not stored
+  if (pend.ok) { // this number tapped Add details in the last 30 minutes: the message is those details
+    const extra = parseJob(body, await todayIn(env, f), false)!;
+    const r = await action(env, f, { ...extra, from_phone: from, action: "details_apply", wa_id: waId, body });
+    if (!r.ok) return;
+    await sendMenu(env, f, numberId, from, updateText(r), String(r.job_id));
+    if (extra.assign && !r.assign_unmatched) await notify(env, f, String(r.job_id), { onlyAssignee: true, exclude: [from], numberId });
+    return;
+  }
+  if (pend.reason !== "none") return; // not an approved number: not read any further, not stored
+  // "Every message is a job" (a setting): typed or forwarded text from an approved number becomes a job.
+  const t = body.trim();
+  if (t.length < 3 || SMALL_TALK.test(t)) return;
+  if (!(await rows(env, f, "pj_settings?select=wa_any_message&limit=1"))[0]?.wa_any_message) return;
   const job = parseJob(body, await todayIn(env, f), false)!;
-  const r = await action(env, f, { ...job, from_phone: from, action: "details_apply", wa_id: waId, body });
-  if (!r.ok) return;
-  await sendMenu(env, f, numberId, from, updateText(r), String(r.job_id));
-  if (job.assign && !r.assign_unmatched) await notify(env, f, String(r.job_id), { onlyAssignee: true, exclude: [from], numberId });
+  if (!job.title) return;
+  if (job.title.length > 90) { // one long paragraph: keep it whole in the details and shorten the headline
+    job.description = (job.title + (job.description ? "\n" + job.description : "")).slice(0, 4000);
+    job.title = cut(job.title.slice(0, 90).replace(/\s+\S*$/, ""), 90) + "\u2026";
+  }
+  const res = await ingest(env, f, { ...job, wa_id: waId, from_phone: from, body, source: "whatsapp" });
+  const reply = replyFor(res);
+  if (reply && res.ok) await sendMenu(env, f, numberId, from, reply, String(res.job_id));
+  else if (reply) await sendText(env, f, numberId, from, reply);
+  if (res.ok) await notify(env, f, String(res.job_id), { exclude: [from], numberId });
 }
 
 /* ---------- job notices: "receive jobs on WhatsApp" ---------- */
@@ -245,7 +265,9 @@ async function onWebhook(req: Request, env: Env, f: Fetch): Promise<Response> {
           for (const m of value.messages || []) {
             const from = String(m.from || "").replace(/\D/g, "");
             if (m?.type === "interactive") { await onInteractive(env, f, numberId, from, m); continue; }
-            const body = m?.type === "text" ? String(m?.text?.body || "") : "";
+            // text, or the caption of a forwarded photo, video or document (the file itself is not saved)
+            let body = m?.type === "text" ? String(m?.text?.body || "") : String(m?.[m?.type]?.caption || "");
+            if (body && m?.type !== "text") body += "\nNote: a " + (m.type === "image" ? "photo" : m.type) + " came with this message on WhatsApp and is not saved here.";
             if (!body) continue;
             if (!isJobMessage(body)) { await onLooseText(env, f, numberId, from, String(m.id || ""), body); continue; }
             today = today || await todayIn(env, f);

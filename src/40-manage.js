@@ -121,7 +121,9 @@ function renderWhatsApp() {
   try { zones = Intl.supportedValuesOf('timeZone'); } catch (_) { zones = []; }
   if (!zones.includes(S.settings.timezone)) zones.unshift(S.settings.timezone);
   $('#main').innerHTML = '' +
-    '<div class="card"><h2>How to write a job</h2><p>Send a message to the business WhatsApp number that starts with the word <b>Job</b>. Only the first line is needed; add any of the other lines you want. Ordinary chat is ignored.</p>' +
+    '<div class="card"><h2>How to write a job</h2>' +
+    '<label class="ck"><input type="checkbox" id="wa-any"' + (S.settings.wa_any_message ? ' checked' : '') + '><span><b>Every message is a job</b><br><small>Any message typed or forwarded to the jobs line from an approved number creates a job. Turn off to require the word Job at the start.</small></span></label>' +
+    '<p style="margin-top:10px">The first line becomes the job. Add any of the other lines you want, or just write notes. Short replies like "ok" or "thanks" are ignored.</p>' +
     '<pre class="code" id="example">' + esc(EXAMPLE) + '</pre><button class="btn sm" data-a="copy" data-t="example">Copy example</button></div>' +
     '<div class="card"><h2>Numbers <small class="mut">who can create jobs, and who is sent them</small></h2><div id="wa-numbers">' + waNumbers() + '</div>' +
     '<button class="btn sm" data-a="number-new">' + ic('plus') + 'Add a number</button>' +

@@ -63,6 +63,7 @@ document.addEventListener('change', (ev) => {
   if (!isMgr()) return;
   if (el.id === 'assign') { const jid = S.job.id, to = el.value; return managerSet({ assigned_to: to || null }, to ? 'Assigned to ' + personName(to) : 'Unassigned').then(() => { if (to) sendNotices(jid, true); }); }
   if (el.id === 'status') return managerSet({ status: el.value }, 'Status: ' + STATUS[el.value]);
+  if (el.id === 'wa-any') { const on = el.checked; return q(S.sb.from('pj_settings').update({ wa_any_message: on }).eq('id', true)).then(() => { S.settings.wa_any_message = on; toast(on ? 'Every message is now a job' : 'Messages must start with Job'); }).catch((e) => { el.checked = !on; toast(problem(e), true); }); }
   if (el.id === 'tz') return q(S.sb.from('pj_settings').update({ timezone: el.value }).eq('id', true)).then(() => { S.settings.timezone = el.value; toast('Time zone saved'); }).catch((e) => toast(problem(e), true));
 });
 document.addEventListener('input', (ev) => {
