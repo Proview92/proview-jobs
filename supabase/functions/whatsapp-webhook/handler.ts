@@ -90,11 +90,95 @@ async function post(env: Env, f: Fetch, phoneNumberId: string, payload: Record<s
       headers: { Authorization: "Bearer " + env.WA_ACCESS_TOKEN, "Content-Type": "application/json" },
       body: JSON.stringify({ messaging_product: "whatsapp", ...payload }),
     });
+    // say why in the function logs (never the token) so a silent failure can be traced
+    if (!r.ok) console.error("whatsapp send failed", r.status, (await r.text().catch(() => "")).slice(0, 300));
     return r.ok;
-  } catch (_) { return false; } // a failed send must not make WhatsApp resend the message
+  } catch (e) { console.error("whatsapp send failed", String(e).slice(0, 200)); return false; } // a failed send must not make WhatsApp resend the message
 }
 async function sendText(env: Env, f: Fetch, phoneNumberId: string, to: string, body: string): Promise<boolean> {
   return post(env, f, phoneNumberId, { to, type: "text", text: { body } });
+}
+
+/* ---------- follow-ups: buttons and pick-lists under the reply ---------- */
+async function action(env: Env, f: Fetch, p: Record<string, unknown>): Promise<Record<string, any>> {
+  try {
+    const r = await f(env.SUPABASE_URL + "/rest/v1/rpc/pj_wa_action", { method: "POST", headers: svc(env), body: JSON.stringify({ p }) });
+    const out = await r.json().catch(() => null);
+    return r.ok && out ? out : { ok: false, reason: "error" };
+  } catch (_) { return { ok: false, reason: "error" }; }
+}
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const cut = (s: unknown, n: number) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n - 1) + "\u2026" : t; };
+const jref = (ref: unknown) => "J-" + String(ref).padStart(4, "0");
+export function updateText(res: Record<string, any>): string {
+  const bits = [res.assignee ? "Assigned to " + res.assignee : "Not assigned yet"];
+  if (res.due_date) bits.push("Due " + niceDate(String(res.due_date)));
+  if (res.priority && res.priority !== "normal") bits.push(String(res.priority)[0].toUpperCase() + String(res.priority).slice(1));
+  const counts = [];
+  if (Number(res.tasks)) counts.push(res.tasks + (Number(res.tasks) === 1 ? " task" : " tasks"));
+  if (Number(res.parts)) counts.push(res.parts + (Number(res.parts) === 1 ? " part" : " parts"));
+  let out = "\u270f\ufe0f " + jref(res.ref) + " updated\n*" + res.title + "*\n" + bits.join(" \u00b7 ");
+  if (counts.length) out += "\n" + counts.join(", ");
+  if (res.assign_unmatched) out += '\n\u26a0\ufe0f I could not match "' + res.assign_asked + '" to one person on the team.';
+  return out;
+}
+export const DETAILS_HELP = (ref: unknown) =>
+  "Send the extra details for " + jref(ref) + " in your next message (within 30 minutes). Use any of these lines, or just write notes:\n\n" +
+  "Customer: Ahmed 050 123 4567\nAddress: Shop 3, Al Wasl Road\nDue: tomorrow\nTasks: mount cameras, run cable\nParts: 4x dome camera";
+/** The confirmation with three buttons under it. Falls back to plain text if WhatsApp refuses the buttons. */
+async function sendMenu(env: Env, f: Fetch, numberId: string, to: string, body: string, jobId: string): Promise<boolean> {
+  const ok = await post(env, f, numberId, { to, type: "interactive", interactive: { type: "button", body: { text: body.slice(0, 1000) }, action: { buttons: [
+    { type: "reply", reply: { id: "as:" + jobId, title: "Assign staff" } },
+    { type: "reply", reply: { id: "pr:" + jobId, title: "Set priority" } },
+    { type: "reply", reply: { id: "dt:" + jobId, title: "Add details" } },
+  ] } } });
+  return ok || sendText(env, f, numberId, to, body);
+}
+async function sendList(env: Env, f: Fetch, numberId: string, to: string, body: string, button: string, rows: { id: string; title: string; description?: string }[]): Promise<boolean> {
+  return post(env, f, numberId, { to, type: "interactive", interactive: { type: "list", body: { text: body.slice(0, 1000) }, action: { button, sections: [{ title: button, rows: rows.slice(0, 10) }] } } });
+}
+/** Someone tapped a button or picked from a list. The ids carry what was tapped and for which job. */
+async function onInteractive(env: Env, f: Fetch, numberId: string, from: string, m: any): Promise<void> {
+  const id = String(m?.interactive?.button_reply?.id || m?.interactive?.list_reply?.id || "");
+  const [kind, jobId, val] = id.split(":");
+  if (!UUID.test(jobId || "")) return;
+  if (kind === "as") {
+    const r = await action(env, f, { from_phone: from, action: "people", job_id: jobId });
+    if (!r.ok) return;
+    const rows = (r.people || []).map((x: any) => ({ id: "a:" + jobId + ":" + x.id, title: cut(x.name, 24), description: x.role === "manager" ? "Manager" : "Staff" }));
+    rows.push({ id: "a:" + jobId + ":none", title: "Nobody yet", description: "Leave it unassigned" });
+    await sendList(env, f, numberId, from, "Who should do " + jref(r.ref) + "?\n*" + r.title + "*", "Choose staff", rows);
+  } else if (kind === "pr") {
+    const r = await action(env, f, { from_phone: from, action: "people", job_id: jobId });
+    if (!r.ok) return;
+    await sendList(env, f, numberId, from, "How urgent is " + jref(r.ref) + "?\n*" + r.title + "*", "Choose priority",
+      [["urgent", "Urgent", "Drop everything"], ["high", "High", "Do it soon"], ["normal", "Normal", "The usual queue"], ["low", "Low", "When there is time"]]
+        .map(([k, t, dsc]) => ({ id: "p:" + jobId + ":" + k, title: t, description: dsc })));
+  } else if (kind === "dt") {
+    const r = await action(env, f, { from_phone: from, action: "details_start", job_id: jobId });
+    if (r.ok) await sendText(env, f, numberId, from, DETAILS_HELP(r.ref));
+  } else if (kind === "a") {
+    const none = val === "none";
+    if (!none && !UUID.test(val || "")) return;
+    const r = await action(env, f, { from_phone: from, action: "assign", job_id: jobId, person_id: none ? "" : val });
+    if (r.ok) {
+      await sendMenu(env, f, numberId, from, updateText(r), jobId);
+      if (!none) await notify(env, f, jobId, { onlyAssignee: true, exclude: [from], numberId });
+    } else if (r.reason === "no_person") await sendText(env, f, numberId, from, "That person is no longer on the team. Tap Assign staff again for the current list.");
+  } else if (kind === "p") {
+    const r = await action(env, f, { from_phone: from, action: "priority", job_id: jobId, priority: val });
+    if (r.ok) await sendMenu(env, f, numberId, from, updateText(r), jobId);
+  }
+}
+/** A message that does not start with "Job": only used when this number tapped Add details in the last 30 minutes. */
+async function onLooseText(env: Env, f: Fetch, numberId: string, from: string, waId: string, body: string): Promise<void> {
+  const pend = await action(env, f, { from_phone: from, action: "pending" });
+  if (!pend.ok) return; // ordinary chat: not read any further, not stored
+  const job = parseJob(body, await todayIn(env, f), false)!;
+  const r = await action(env, f, { ...job, from_phone: from, action: "details_apply", wa_id: waId, body });
+  if (!r.ok) return;
+  await sendMenu(env, f, numberId, from, updateText(r), String(r.job_id));
+  if (job.assign && !r.assign_unmatched) await notify(env, f, String(r.job_id), { onlyAssignee: true, exclude: [from], numberId });
 }
 
 /* ---------- job notices: "receive jobs on WhatsApp" ---------- */
@@ -159,14 +243,17 @@ async function onWebhook(req: Request, env: Env, f: Fetch): Promise<Response> {
         // 1) A manager messages the business number.
         if (change.field === "messages") {
           for (const m of value.messages || []) {
+            const from = String(m.from || "").replace(/\D/g, "");
+            if (m?.type === "interactive") { await onInteractive(env, f, numberId, from, m); continue; }
             const body = m?.type === "text" ? String(m?.text?.body || "") : "";
-            if (!isJobMessage(body)) continue;
+            if (!body) continue;
+            if (!isJobMessage(body)) { await onLooseText(env, f, numberId, from, String(m.id || ""), body); continue; }
             today = today || await todayIn(env, f);
             const job = parseJob(body, today)!;
-            const from = String(m.from || "").replace(/\D/g, "");
             const res = await ingest(env, f, { ...job, wa_id: m.id, from_phone: from, body, source: "whatsapp" });
             const reply = replyFor(res);
-            if (reply) await sendText(env, f, numberId, from, reply);
+            if (reply && res.ok) await sendMenu(env, f, numberId, from, reply, String(res.job_id));
+            else if (reply) await sendText(env, f, numberId, from, reply);
             if (res.ok) await notify(env, f, String(res.job_id), { exclude: [from], numberId });
           }
         }

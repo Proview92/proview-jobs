@@ -21,6 +21,7 @@ export interface ParsedJob {
   assign: string;
   tasks: string[];
   parts: ParsedPart[];
+  priority_set?: boolean; // true when the message itself stated a priority
 }
 
 const TRIGGER = /^[\s*_~`]*(?:#\s*job|new\s+job|job)(?![a-z0-9])[\s*_~`]*[:\-–—.]?[\s*_~`]*/i;
@@ -185,7 +186,8 @@ export function parseJob(text: string, todayISO: string, needTrigger = true): Pa
     notes.push(clean(line));
   }
 
-  if (!prioritySet && /\b(urgent|asap|emergency)\b/i.test(body)) job.priority = "urgent";
+  if (!prioritySet && /\b(urgent|asap|emergency)\b/i.test(body)) { job.priority = "urgent"; prioritySet = true; }
+  job.priority_set = prioritySet;
   job.title = job.title.slice(0, 200);
   job.description = notes.join("\n");
   return job;

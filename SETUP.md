@@ -38,6 +38,9 @@ The app's WhatsApp page has a Numbers list (`pj_wa_numbers`). Each number can be
 
 Job notices go out when a job arrives by WhatsApp, and when a manager creates or reassigns one in the app. WhatsApp only delivers free-text messages to someone who has written to the business number in the last 24 hours. To reach people outside that window, get a template approved in WhatsApp Manager with the body `New job {{1}}: {{2}}. {{3}}` and store its name as the secret `WA_TEMPLATE` (and `WA_TEMPLATE_LANG` if it is not `en`).
 
+### Buttons under the reply
+The "Job J-0012 created" reply carries three buttons: **Assign staff** (a pick-list of the team), **Set priority** (a pick-list) and **Add details**. After Add details, the next ordinary message from that number within 30 minutes is added to the job, using the same lines (Customer, Address, Due, Tasks, Parts) or plain notes. Only numbers allowed to create jobs can use them. WhatsApp shows at most 10 rows in a list, so the first 9 team members by name are offered.
+
 ### Connecting a number (Meta WhatsApp Cloud API)
 The normal WhatsApp Business app cannot hand messages to other software by itself. The number that receives job messages has to be on Meta's Cloud API.
 
@@ -58,6 +61,6 @@ The normal WhatsApp Business app cannot hand messages to other software by itsel
 2. **Email sending:** Supabase's built-in email is limited to a few messages an hour. Connect your own SMTP (for example Resend) before adding many staff.
 
 ## Rebuilding from scratch
-Run `supabase/schema.sql` in the SQL editor, then:
+Run `supabase/schema.sql`, then `supabase/schema-2-wa-actions.sql`, in the SQL editor, then:
 
     supabase functions deploy whatsapp-webhook --no-verify-jwt
