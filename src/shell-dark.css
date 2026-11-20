@@ -1,0 +1,9 @@
+/* Proview Jobs runs dark: the shared sign-in and loading pages, recoloured to match. */
+.login.pvs-root{--bg:#0a0f1c;--ink:#f3f5fb;--line:#263050;--mut:#94a0bd;--card:#141a2b;--pri:#f59e0b;color-scheme:dark;background:radial-gradient(120% 60% at 50% 0%,#1a2140 0%,#0a0f1c 60%)}
+.pvs-card{background:#141a2b;box-shadow:0 30px 80px -20px rgba(0,0,0,.7)}
+.pvs-card label.af{color:#b9c2da}
+.pvs-card label.af input{background:#0e1424;color:var(--ink)}
+.pvs-card .go{background:linear-gradient(135deg,#f59e0b 0%,#ea7a0c 100%);color:#1a1205;font-weight:700}
+.pvs-card .alinks button:hover,.pvs-card .pw-eye:hover{background:#1b2238}
+.pvs-card .notice{background:#16233f;border-color:#2a4479;color:#a9c4ff}
+.pvs-card .notice.bad{background:#3a1a22;border-color:#6d2a38;color:#ffb1bd}

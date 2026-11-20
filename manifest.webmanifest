@@ -1,0 +1,11 @@
+{
+  "name": "Proview Jobs",
+  "short_name": "Jobs",
+  "description": "Create jobs, assign them to staff and track them to done.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0a0f1c",
+  "theme_color": "#0a0f1c",
+  "icons": [{ "src": "icon-app.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
