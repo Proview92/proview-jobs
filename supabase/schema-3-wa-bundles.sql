@@ -58,7 +58,7 @@ begin
       on conflict (phone) do update set job_id = excluded.job_id, seq = 1, texts = excluded.texts, photos = excluded.photos,
         titled = excluded.titled, last_at = excluded.last_at, menu_at = null;
     -- the next typed message from this number names the job
-    insert into public.pj_wa_pending (phone, job_id, expires_at, kind) values (v_from, v_job, now() + interval '15 minutes', 'title')
+    insert into public.pj_wa_pending (phone, job_id, expires_at, kind) values (v_from, v_job, now() + interval '1 minute', 'title')
       on conflict (phone) do update set job_id = excluded.job_id, expires_at = excluded.expires_at, kind = 'title';
     return jsonb_build_object('ok', true, 'new', true, 'job_id', v_job, 'ref', (r->>'ref')::integer, 'seq', 1);
   end if;
@@ -76,7 +76,7 @@ begin
   update public.pj_wa_bundle set seq = seq + 1, texts = texts + case when v_photo then 0 else 1 end,
     photos = photos + case when v_photo then 1 else 0 end, titled = titled or v_title <> '', last_at = clock_timestamp()
     where phone = v_from returning seq into v_seq;
-  update public.pj_wa_pending set expires_at = now() + interval '15 minutes' where phone = v_from and job_id = b.job_id and kind = 'title';
+  update public.pj_wa_pending set expires_at = now() + interval '1 minute' where phone = v_from and job_id = b.job_id and kind = 'title';
   return jsonb_build_object('ok', true, 'new', false, 'job_id', b.job_id, 'ref', v_ref, 'seq', v_seq);
 end $$;
 revoke all on function public.pj_wa_bundle(jsonb) from public, anon, authenticated;

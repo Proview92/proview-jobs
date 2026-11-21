@@ -299,7 +299,7 @@ async function rpc(env: Env, f: Fetch, name: string, body: Record<string, unknow
 }
 /** Runs a few seconds after each item. Only the last item of a batch gets through, and it sends the one reply. */
 async function settle(env: Env, f: Fetch, numberId: string, from: string, seq: number): Promise<void> {
-  const wait = env.settleMs ?? 7000;
+  const wait = env.settleMs ?? 2000;
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   const r = await rpc(env, f, "pj_wa_bundle_settle", { p_phone: from, p_seq: seq });
   if (!r.ok) return; // something newer arrived: that one will reply
@@ -310,7 +310,7 @@ async function settle(env: Env, f: Fetch, numberId: string, from: string, seq: n
   const jobId = String(r.job_id);
   if (!r.first) { await sendText(env, f, numberId, from, "📎 Added to " + jref(r.ref) + ". It now has " + what + "."); return; }
   const head = "✅ Job " + jref(r.ref) + " created from " + what + "\n*" + r.title + "*";
-  const ask = r.needs_title ? "\n\n✏️ Reply with a title for this job. Your next typed message becomes the title (within 15 minutes)." : "";
+  const ask = r.needs_title ? "\n\n✏️ Reply with a title for this job. Your next typed message becomes the title (within 1 minute)." : "";
   const list = (r.people || []).map((x: any) => ({ id: "a:" + jobId + ":" + x.id, title: cut(x.name, 24), description: x.role === "manager" ? "Manager" : "Staff" }));
   list.push({ id: "a:" + jobId + ":none", title: "Nobody yet", description: "Leave it unassigned" });
   const ok = await sendList(env, f, numberId, from, head + "\n\nTap *Choose staff* to pick who does it." + ask, "Choose staff", list);
