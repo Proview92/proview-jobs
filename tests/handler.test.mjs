@@ -2,11 +2,12 @@
 import assert from "node:assert/strict";
 import { handle, sign, replyFor, jobNotice, updateText, savePhoto, AUTO_REPLY } from "../supabase/functions/whatsapp-webhook/handler.ts";
 
-const env = { SUPABASE_URL: "https://x.supabase.co", SERVICE_KEY: "svc", WA_VERIFY_TOKEN: "letmein", WA_APP_SECRET: "shh", WA_ACCESS_TOKEN: "tok" };
+const env = { SUPABASE_URL: "https://x.supabase.co", SERVICE_KEY: "svc", WA_VERIFY_TOKEN: "letmein", WA_APP_SECRET: "shh", WA_ACCESS_TOKEN: "tok", settleMs: 0 };
 const JOB = "22222222-2222-2222-2222-222222222222";
 const PERSON = "33333333-3333-3333-3333-333333333333";
 function world({ manager = true, userOk = true, pending = false, buttonsFail = false, any = false, target = null, mime = "image/jpeg", mediaUrl = "https://lookaside.fbsbx.com/whatsapp_business/attachments/?mid=1" } = {}) {
   const calls = [];
+  let bundle = null, titlePending = false; // the forwarded batch this number has open
   const f = async (url, init = {}) => {
     const body = typeof init.body === "string" ? JSON.parse(init.body) : null;
     calls.push({ url: String(url), body, headers: init.headers || {} });
@@ -21,12 +22,32 @@ function world({ manager = true, userOk = true, pending = false, buttonsFail = f
     if (String(url).includes("/rpc/pj_wa_action")) {
       const p = body.p, base = { ok: true, job_id: JOB, ref: 12, title: "Install cameras", assignee: null, due_date: null, priority: "normal", tasks: 0, parts: 0 };
       if (p.from_phone !== "971500000001") return j({ ok: false, reason: "not_allowed" });
-      if (p.action === "pending") return j(pending ? { ok: true, job_id: JOB } : { ok: false, reason: "none" });
+      if (p.action === "pending") return j(pending ? { ok: true, job_id: JOB, kind: "details" } : titlePending ? { ok: true, job_id: JOB, kind: "title" } : { ok: false, reason: "none" });
       if (p.action === "people") return j({ ...base, people: [{ id: PERSON, name: "Ravi Kumar With A Very Long Name", role: "staff" }, { id: "44444444-4444-4444-4444-444444444444", name: "Sunny", role: "manager" }] });
       if (p.action === "assign") return j({ ...base, action: "assign", assignee: p.person_id ? "Ravi Kumar" : null });
       if (p.action === "priority") return j({ ...base, action: "priority", priority: p.priority });
       if (p.action === "details_start") return j({ ...base, action: "details_start" });
+      if (p.action === "details_apply" && titlePending) { titlePending = false; return j({ ...base, action: "details_apply", kind: "title", title: p.title }); }
       if (p.action === "details_apply") return j({ ...base, action: "details_apply", due_date: p.due_date, tasks: p.tasks.length, parts: p.parts.length, assign_unmatched: false });
+    }
+    if (String(url).includes("/rpc/pj_wa_bundle_settle")) {
+      if (!bundle || bundle.seq !== body.p_seq) return j({ ok: false, reason: "moved" });
+      const first = !bundle.menu; bundle.menu = true;
+      return j({ ok: true, first, job_id: JOB, ref: 12, title: bundle.title, texts: bundle.texts, photos: calls.filter((c) => c.url.includes("/rest/v1/pj_job_photos")).length, needs_title: titlePending,
+        people: [{ id: PERSON, name: "Ravi Kumar", role: "staff" }, { id: "44444444-4444-4444-4444-444444444444", name: "Sunny", role: "manager" }] });
+    }
+    if (String(url).includes("/rpc/pj_wa_bundle")) {
+      const p = body.p, photo = p.kind === "photo";
+      if (p.from_phone !== "971500000001") return j({ ok: false, reason: "not_allowed" });
+      if (!bundle) {
+        if (!p.create) return j({ ok: false, reason: "none" });
+        bundle = { seq: 1, texts: photo ? 0 : 1, photos: photo ? 1 : 0, title: p.title || "Photos sent on WhatsApp", titled: !!p.title, menu: false, body: p.body }; titlePending = true;
+        return j({ ok: true, new: true, job_id: JOB, ref: 12, seq: 1 });
+      }
+      bundle.seq++; if (photo) bundle.photos++; else bundle.texts++;
+      if (!bundle.titled && p.title) { bundle.title = p.title; bundle.titled = true; }
+      if (p.body) bundle.body = (bundle.body ? bundle.body + "\n\n" : "") + p.body;
+      return j({ ok: true, new: false, job_id: JOB, ref: 12, seq: bundle.seq });
     }
     if (String(url).includes("/rpc/pj_wa_photo_target")) return j(body.p_phone !== "971500000001" ? { ok: false, reason: "not_allowed" } : pending ? { ok: true, job_id: JOB, ref: 12, pending: true } : target ? { ok: true, job_id: JOB, ref: 12, pending: false } : { ok: false, reason: "none" });
     if (String(url).includes("graph.facebook.com") && String(url).endsWith("/MEDIA1")) return j({ url: mediaUrl, mime_type: mime });
@@ -41,7 +62,7 @@ function world({ manager = true, userOk = true, pending = false, buttonsFail = f
     if (String(url).includes("graph.facebook.com")) return j({});
     throw new Error("unexpected " + url);
   };
-  return { f, calls };
+  return { f, calls, get bundle() { return bundle; } };
 }
 const waBody = (text, from = "971500000001", field = "messages") => JSON.stringify({ object: "whatsapp_business_account", entry: [{ id: "W", changes: [{ field, value: { messaging_product: "whatsapp", metadata: { display_phone_number: "971400000000", phone_number_id: "PNID" },
   [field === "messages" ? "messages" : "message_echoes"]: [{ from, to: "971511111111", id: "wamid.1", timestamp: "1", type: "text", text: { body: text } }] } }] }] });
@@ -213,7 +234,8 @@ let n = 0;
   assert.equal(ing(w).length, 0); assert.equal(stored(w).length, 1); assert.match(sent(w)[0].interactive.body.text, /J-0012 updated[\s\S]*Photo attached/);
   // photo on its own with nothing recent: a job to hang it on (only when every message is a job)
   w = world({ any: true }); await post(pic(""), w.f);
-  assert.equal(ing(w)[0].title, "Photo sent on WhatsApp"); assert.equal(stored(w).length, 1); assert.match(sent(w)[0].interactive.body.text, /Photo attached\nTap Add details/);
+  assert.equal(ing(w).length, 0); assert.equal(w.bundle.title, "Photos sent on WhatsApp"); assert.equal(stored(w).length, 1);
+  assert.equal(sent(w)[0].interactive.type, "list"); assert.match(sent(w)[0].interactive.body.text, /Job J-0012 created from 1 photo[\s\S]*Choose staff[\s\S]*Reply with a title/);
   w = world({ any: false }); await post(pic(""), w.f); assert.equal(ing(w).length, 0); assert.equal(stored(w).length, 0); assert.equal(sent(w).length, 0);
   // with the switch off, a caption must start with Job
   w = world({ any: false }); await post(pic("Broken camera"), w.f); assert.equal(ing(w).length, 0);
@@ -233,9 +255,60 @@ let n = 0;
   for (const t of ["Fix the automated gate response at site 2", "Install automatic doors", "Job: automated message board repair"]) assert.ok(!AUTO_REPLY.test(t), t);
   const w = world({ any: true }); await post(waBody("Fix the automated gate response at site 2"), w.f); assert.ok(w.calls.some((c) => c.url.includes("pj_wa_ingest"))); n++; }
 
+// forwarded messages and photos sent in one go: ONE job, ONE reply with the staff list and a request for the title
+{ const msg = (o, i) => ({ from: o.from || "971500000001", id: "wamid.f" + i, timestamp: "1", ...(o.fwd === false ? {} : { context: { forwarded: true } }),
+    ...(o.img ? { type: "image", image: { id: "MEDIA1", mime_type: "image/jpeg", ...(o.cap ? { caption: o.cap } : {}) } } : o.vid ? { type: "video", video: { id: "V1", caption: o.cap } } : { type: "text", text: { body: o.text } }) });
+  const batch = (...items) => JSON.stringify({ object: "whatsapp_business_account", entry: [{ id: "W", changes: [{ field: "messages", value: { messaging_product: "whatsapp", metadata: { phone_number_id: "PNID" }, messages: items.map(msg) } }] }] });
+  const sent = (w) => w.calls.filter((c) => c.url.includes("graph.facebook.com") && c.url.endsWith("/messages") && c.body.to === "971500000001").map((c) => c.body);
+  const bun = (w) => w.calls.filter((c) => c.url.includes("/rpc/pj_wa_bundle") && !c.url.includes("settle")).map((c) => c.body.p);
+  const stored = (w) => w.calls.filter((c) => c.url.includes("/storage/v1/object/job-photos/"));
+  // a photo, a message and another photo forwarded together
+  let w = world({ any: true }); const later = [];
+  let r = await handle(new Request("https://fn/", { method: "POST", body: batch({ img: true }, { text: "Hi, the till at Karama branch keeps freezing\nCan someone come today?" }, { img: true }),
+    headers: { "x-hub-signature-256": await sign("shh", batch({ img: true }, { text: "Hi, the till at Karama branch keeps freezing\nCan someone come today?" }, { img: true })) } }), { ...env, settleMs: 40, defer: (p) => later.push(p) }, w.f);
+  assert.equal(r.status, 200); assert.equal(later.length, 3); assert.equal(sent(w).length, 0, "nothing is sent until the batch has gone quiet");
+  await Promise.all(later);
+  assert.equal(bun(w).length, 3); assert.ok(bun(w).every((p) => p.create === true)); assert.deepEqual(bun(w).map((p) => p.kind), ["photo", "text", "photo"]);
+  assert.equal(w.calls.filter((c) => c.url.includes("pj_wa_ingest")).length, 0); assert.equal(stored(w).length, 2);
+  assert.equal(w.bundle.title, "Hi, the till at Karama branch keeps freezing"); assert.match(w.bundle.body, /Can someone come today/);
+  assert.equal(sent(w).length, 1, "one reply for the whole batch");
+  const m = sent(w)[0].interactive; assert.equal(m.type, "list"); assert.equal(m.action.button, "Choose staff");
+  assert.match(m.body.text, /Job J-0012 created from 1 message and 2 photos\n\*Hi, the till at Karama branch keeps freezing\*[\s\S]*Reply with a title/);
+  assert.deepEqual(m.action.sections[0].rows.map((x) => x.id), ["a:" + JOB + ":" + PERSON, "a:" + JOB + ":44444444-4444-4444-4444-444444444444", "a:" + JOB + ":none"]);
+  // the other listed number hears about it once
+  assert.equal(w.calls.filter((c) => c.url.endsWith("/messages") && c.body.to === "971500000002").length, 1);
+  // the next typed message is the title, not a new job
+  await post(waBody("Karama till freezing"), w.f);
+  const ap = w.calls.filter((c) => c.url.includes("pj_wa_action") && c.body.p.action === "details_apply").map((c) => c.body.p);
+  assert.equal(ap.length, 1); assert.equal(ap[0].title, "Karama till freezing"); assert.equal(w.calls.filter((c) => c.url.includes("pj_wa_ingest")).length, 0);
+  assert.match(sent(w)[1].interactive.body.text, /J-0012 updated\n\*Karama till freezing\*/);
+  // one more forwarded photo a moment later joins the same job with a short note, no second menu
+  await post(batch({ img: true }), w.f); assert.equal(stored(w).length, 3); assert.match(sent(w)[2].text.body, /Added to J-0012\. It now has 1 message and 3 photos/);
+  // "ok" while a title is wanted is not taken as the title
+  w = world({ any: true }); await post(batch({ text: "Printer jammed at reception" }), w.f); await post(waBody("ok"), w.f);
+  assert.equal(w.calls.filter((c) => c.url.includes("pj_wa_action") && c.body.p.action === "details_apply").length, 0);
+  // a long forwarded paragraph: short headline, whole text kept
+  w = world({ any: true }); const long = "Good morning team, we have noticed that the cameras at the back entrance of the warehouse stopped recording on Tuesday night and need checking";
+  await post(batch({ text: long }), w.f); assert.ok(bun(w)[0].title.length <= 92); assert.equal(bun(w)[0].description, long);
+  // a forwarded video keeps its words and says the file is not saved; one with no words is left alone
+  w = world({ any: true }); await post(batch({ vid: true, cap: "Leak under sink" }), w.f); assert.equal(bun(w)[0].title, "Leak under sink"); assert.match(bun(w)[0].body, /a video came with this message/);
+  w = world({ any: true }); await post(batch({ vid: true }), w.f); assert.equal(w.calls.length, 0);
+  // a plain photo with nothing typed joins a batch that is open
+  w = world({ any: true }); await post(batch({ text: "Gate motor noisy" }), w.f); await post(batch({ img: true, fwd: false }), w.f);
+  assert.deepEqual(bun(w).map((p) => p.create), [true, false]); assert.equal(stored(w).length, 1); assert.ok(!w.calls.some((c) => c.url.includes("pj_wa_photo_target")));
+  // forwarded while adding details: still the details of that job
+  w = world({ any: true, pending: true }); await post(batch({ text: "Address: Shop 3" }), w.f); assert.equal(bun(w).length, 0);
+  assert.equal(w.calls.filter((c) => c.url.includes("pj_wa_action") && c.body.p.action === "details_apply").length, 1);
+  // a forwarded auto-reply is dropped; an unapproved number is never fetched or answered; switch off = as before
+  w = world({ any: true }); await post(batch({ text: "(AUTOMATED MESSAGE) away" }), w.f); assert.equal(w.calls.length, 0);
+  w = world({ any: true }); await post(batch({ img: true, from: "971599999999" }), w.f); assert.ok(!w.calls.some((c) => c.url.includes("graph.facebook.com") || c.url.includes("/storage/")));
+  w = world({ any: false }); await post(batch({ text: "Fix the door" }), w.f); assert.equal(bun(w).length, 0); assert.equal(sent(w).length, 0);
+  w = world({ any: false }); await post(batch({ text: "Job: Fix the door" }), w.f); assert.equal(w.calls.filter((c) => c.url.includes("pj_wa_ingest")).length, 1);
+  n++; }
+
 assert.equal(replyFor({ ok: false, reason: "duplicate" }), null);
 assert.match(replyFor({ ok: true, ref: 3, title: "T", assignee: null, assign_unmatched: true, assign_asked: "bob" }), /Not assigned yet[\s\S]*could not match "bob"/);
 console.log("handler:", n, "groups passed");
 { const { selfTest } = await import("../supabase/functions/whatsapp-webhook/handler.ts");
-  assert.equal(selfTest(), "selftest ok 13");
-  const r = await handle(new Request("https://fn/?selftest=1"), env); assert.equal(await r.text(), "selftest ok 13"); console.log("selftest ok"); }
+  assert.equal(selfTest(), "selftest ok 14");
+  const r = await handle(new Request("https://fn/?selftest=1"), env); assert.equal(await r.text(), "selftest ok 14"); console.log("selftest ok"); }

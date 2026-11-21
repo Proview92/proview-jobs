@@ -11,6 +11,8 @@ export interface Env {
   WA_PHONE_NUMBER_ID?: string; // the business number's id in Meta: needed to send job notices from the app
   WA_TEMPLATE?: string;        // optional approved template "New job {{1}}: {{2}}. {{3}}" for people who have not messaged in the last 24 hours
   WA_TEMPLATE_LANG?: string;
+  defer?: (p: Promise<unknown>) => void; // lets the reply to a forwarded batch go out after the webhook has answered
+  settleMs?: number;                     // how long to wait for more forwarded items before replying
 }
 type Fetch = typeof fetch;
 
@@ -174,10 +176,19 @@ async function onInteractive(env: Env, f: Fetch, numberId: string, from: string,
 export const AUTO_REPLY = /\(\s*auto(?:mated|matic)?[\s-]*(?:message|response|reply)\s*\)|^\s*auto(?:mated|matic)?[\s-]*(?:message|response|reply)\b/i;
 // Replies that are plainly not a job, so "ok" or "thanks" to the jobs line does not create one.
 const SMALL_TALK = /^(ok(ay)?|k|thanks?( you)?|thank you|thx|ty|cheers|yes|no|yep|nope|hi|hello|hey|done|great|cool|noted|will do|got it|perfect|[\u{1F44D}\u{1F64F}\u{1F44C}\u{2705}\u{2764}\u{FE0F}\s]+)[.!\s]*$/iu;
+function looseJob(body: string, today: string) {
+  const job = parseJob(body, today, false)!;
+  if (job.title.length > 90) { // one long paragraph: keep it whole in the details and shorten the headline
+    job.description = (job.title + (job.description ? "\n" + job.description : "")).slice(0, 4000);
+    job.title = cut(job.title.slice(0, 90).replace(/\s+\S*$/, ""), 90) + "\u2026";
+  }
+  return job;
+}
 /** A message that does not start with "Job". */
 async function onLooseText(env: Env, f: Fetch, numberId: string, from: string, waId: string, body: string): Promise<void> {
   const pend = await action(env, f, { from_phone: from, action: "pending" });
-  if (pend.ok) { // this number tapped Add details in the last 30 minutes: the message is those details
+  if (pend.ok) { // this number tapped Add details, or was just asked for a job title: the message is that
+    if (pend.kind === "title" && SMALL_TALK.test(body.trim())) return;
     const extra = parseJob(body, await todayIn(env, f), false)!;
     const r = await action(env, f, { ...extra, from_phone: from, action: "details_apply", wa_id: waId, body });
     if (!r.ok) return;
@@ -190,12 +201,8 @@ async function onLooseText(env: Env, f: Fetch, numberId: string, from: string, w
   const t = body.trim();
   if (t.length < 3 || SMALL_TALK.test(t)) return;
   if (!(await rows(env, f, "pj_settings?select=wa_any_message&limit=1"))[0]?.wa_any_message) return;
-  const job = parseJob(body, await todayIn(env, f), false)!;
+  const job = looseJob(body, await todayIn(env, f));
   if (!job.title) return;
-  if (job.title.length > 90) { // one long paragraph: keep it whole in the details and shorten the headline
-    job.description = (job.title + (job.description ? "\n" + job.description : "")).slice(0, 4000);
-    job.title = cut(job.title.slice(0, 90).replace(/\s+\S*$/, ""), 90) + "\u2026";
-  }
   const res = await ingest(env, f, { ...job, wa_id: waId, from_phone: from, body, source: "whatsapp" });
   const reply = replyFor(res);
   if (reply && res.ok) await sendMenu(env, f, numberId, from, reply, String(res.job_id));
@@ -276,14 +283,75 @@ async function onPhoto(env: Env, f: Fetch, numberId: string, from: string, m: an
     await sendText(env, f, numberId, from, saved ? "\ud83d\udcce Photo added to " + jref(target.ref) : "\u26a0\ufe0f The photo for " + jref(target.ref) + " could not be saved. Add it in the app.");
     return;
   }
-  // 4) a photo on its own, when every message is a job: start a job to hang it on
-  if (any) {
-    const res = await ingest(env, f, { title: "Photo sent on WhatsApp", description: "", tasks: [], parts: [], wa_id: m.id, from_phone: from, body: "(photo)", source: "whatsapp" });
-    if (!res.ok) return;
-    const saved = await savePhoto(env, f, mediaId, String(res.job_id));
-    await sendMenu(env, f, numberId, from, replyFor(res) + (saved ? good : bad) + "\nTap Add details to say what it is.", String(res.job_id));
-    await notify(env, f, String(res.job_id), { exclude: [from], numberId });
+  // 4) a photo on its own, when every message is a job: start a job to hang it on (more photos join it)
+  if (any) await bundleItem(env, f, numberId, from, m, "", true);
+}
+
+/* ---------- forwarded messages and photos: everything sent in one go becomes ONE job ---------- */
+const isForwarded = (m: any) => !!(m?.context?.forwarded || m?.context?.frequently_forwarded);
+const plural = (n: number, one: string) => n + " " + one + (n === 1 ? "" : "s");
+async function rpc(env: Env, f: Fetch, name: string, body: Record<string, unknown>): Promise<Record<string, any>> {
+  try {
+    const r = await f(env.SUPABASE_URL + "/rest/v1/rpc/" + name, { method: "POST", headers: svc(env), body: JSON.stringify(body) });
+    const out = await r.json().catch(() => null);
+    return r.ok && out ? out : { ok: false, reason: "error" };
+  } catch (_) { return { ok: false, reason: "error" }; }
+}
+/** Runs a few seconds after each item. Only the last item of a batch gets through, and it sends the one reply. */
+async function settle(env: Env, f: Fetch, numberId: string, from: string, seq: number): Promise<void> {
+  const wait = env.settleMs ?? 7000;
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  const r = await rpc(env, f, "pj_wa_bundle_settle", { p_phone: from, p_seq: seq });
+  if (!r.ok) return; // something newer arrived: that one will reply
+  const bits: string[] = [];
+  if (Number(r.texts)) bits.push(plural(Number(r.texts), "message"));
+  if (Number(r.photos)) bits.push(plural(Number(r.photos), "photo"));
+  const what = bits.join(" and ") || "your message";
+  const jobId = String(r.job_id);
+  if (!r.first) { await sendText(env, f, numberId, from, "📎 Added to " + jref(r.ref) + ". It now has " + what + "."); return; }
+  const head = "✅ Job " + jref(r.ref) + " created from " + what + "\n*" + r.title + "*";
+  const ask = r.needs_title ? "\n\n✏️ Reply with a title for this job. Your next typed message becomes the title (within 15 minutes)." : "";
+  const list = (r.people || []).map((x: any) => ({ id: "a:" + jobId + ":" + x.id, title: cut(x.name, 24), description: x.role === "manager" ? "Manager" : "Staff" }));
+  list.push({ id: "a:" + jobId + ":none", title: "Nobody yet", description: "Leave it unassigned" });
+  const ok = await sendList(env, f, numberId, from, head + "\n\nTap *Choose staff* to pick who does it." + ask, "Choose staff", list);
+  if (!ok) await sendMenu(env, f, numberId, from, head + ask, jobId);
+  await notify(env, f, jobId, { exclude: [from], numberId });
+}
+/**
+ * Put one forwarded message or photo onto this number's open job, starting a job if there is none.
+ * "none" = nothing was open and create was false. "denied" = not an approved number (nothing fetched or stored).
+ */
+async function bundleItem(env: Env, f: Fetch, numberId: string, from: string, m: any, body: string, create: boolean): Promise<"done" | "none" | "denied"> {
+  const photo = m?.type === "image";
+  const job = body ? looseJob(body, await todayIn(env, f)) : null;
+  const title = job?.title || (body ? cut(body, 90) : "");
+  const r = await rpc(env, f, "pj_wa_bundle", { p: { ...(job || { tasks: [], parts: [], description: "" }), title, wa_id: String(m.id || ""), from_phone: from, body, kind: photo ? "photo" : "text", create } });
+  if (!r.ok) return r.reason === "none" ? "none" : r.reason === "duplicate" ? "done" : "denied";
+  if (photo && !(await savePhoto(env, f, String(m?.image?.id || ""), String(r.job_id)))) {
+    await sendText(env, f, numberId, from, "⚠️ A photo for " + jref(r.ref) + " could not be saved. Add it in the app.");
   }
+  const later = settle(env, f, numberId, from, Number(r.seq)).catch((e) => console.error("bundle reply failed", String(e).slice(0, 200)));
+  if (env.defer) env.defer(later); else await later;
+  return "done";
+}
+/** Forwarded text or media, or a photo with nothing typed under it. True when the message has been dealt with. */
+async function onBundle(env: Env, f: Fetch, numberId: string, from: string, m: any): Promise<boolean> {
+  const photo = m?.type === "image", fwd = isForwarded(m);
+  if (!fwd && !photo) return false;
+  let body = (m?.type === "text" ? String(m?.text?.body || "") : String(m?.[m?.type]?.caption || "")).trim();
+  if (!fwd && body) return false;            // a photo with a typed caption: handled as before
+  if (!photo && !body) return false;         // a forwarded video or file with no words: nothing to keep
+  if (AUTO_REPLY.test(body)) return true;
+  if (body && !photo && m?.type !== "text") body += "\nNote: a " + m.type + " came with this message on WhatsApp and is not saved here.";
+  if (!(await rows(env, f, "pj_settings?select=wa_any_message&limit=1"))[0]?.wa_any_message) return false;
+  if (fwd) { // forwarded while adding details to a job: it is those details, as before
+    const pend = await action(env, f, { from_phone: from, action: "pending" });
+    if (pend.ok && pend.kind !== "title") return false;
+    if (!pend.ok && pend.reason !== "none") return true; // not an approved number: dropped here
+  }
+  // a forwarded item always joins or starts a batch; a plain photo only joins one that is already open
+  const out = await bundleItem(env, f, numberId, from, m, body, fwd);
+  return out !== "none";
 }
 
 /* ---------- job notices: "receive jobs on WhatsApp" ---------- */
@@ -350,6 +418,7 @@ async function onWebhook(req: Request, env: Env, f: Fetch): Promise<Response> {
           for (const m of value.messages || []) {
             const from = String(m.from || "").replace(/\D/g, "");
             if (m?.type === "interactive") { await onInteractive(env, f, numberId, from, m); continue; }
+            if (await onBundle(env, f, numberId, from, m)) continue;
             if (m?.type === "image") { await onPhoto(env, f, numberId, from, m); continue; }
             // text, or the caption of a forwarded video or document (those files are not saved; photos are)
             let body = m?.type === "text" ? String(m?.text?.body || "") : String(m?.[m?.type]?.caption || "");
@@ -441,7 +510,8 @@ export function selfTest(): string {
   eq("chat", [isJobMessage("Good job today"), isJobMessage("jobs tomorrow?"), isJobMessage("New job - x")], [false, false, true]);
   eq("friday", parseJob("job x\ndue: fri", T)!.due_date, "2026-11-27");
   eq("auto", [AUTO_REPLY.test("(AUTOMATED MESSAGE)\nCall the office"), AUTO_REPLY.test("Thanks (automated response)"), AUTO_REPLY.test("Fix the automated gate")], [true, true, false]);
-  return fails.length ? "selftest FAILED " + fails.join("; ") : "selftest ok 13";
+  eq("forwarded", [isForwarded({ context: { forwarded: true } }), isForwarded({ context: { frequently_forwarded: true } }), isForwarded({ type: "text" })], [true, true, false]);
+  return fails.length ? "selftest FAILED " + fails.join("; ") : "selftest ok 14";
 }
 
 export async function handle(req: Request, env: Env, f: Fetch = fetch): Promise<Response> {

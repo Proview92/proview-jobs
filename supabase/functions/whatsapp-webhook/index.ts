@@ -15,5 +15,7 @@ Deno.serve((req: Request) =>
     WA_PHONE_NUMBER_ID: Deno.env.get("WA_PHONE_NUMBER_ID") || undefined,
     WA_TEMPLATE: Deno.env.get("WA_TEMPLATE") || undefined,
     WA_TEMPLATE_LANG: Deno.env.get("WA_TEMPLATE_LANG") || undefined,
+    // the reply to a forwarded batch waits a few seconds for more items, after WhatsApp has its answer
+    defer: (p) => (globalThis as any).EdgeRuntime?.waitUntil ? (globalThis as any).EdgeRuntime.waitUntil(p) : void p,
   })
 );

@@ -22,6 +22,8 @@ The database enforces this, not just the screen.
 ## WhatsApp
 With **Every message is a job** switched on (the default, on the app's WhatsApp page), any text typed or forwarded to the jobs line from an approved number creates a job; short replies such as "ok" or "thanks" are ignored. A phone's own auto-reply is ignored too: any message containing "(automated message)", "(automated response)" or "(auto-reply)". Switched off, a message must start with `Job`, `#job` or `New job`. Approved numbers are those on the Numbers list plus the WhatsApp number of each active manager. Messages from any other number are ignored and never stored. A photo sent or forwarded to the jobs line is saved on the job: with a caption it starts a new job, without one it joins the job that number sent in the last 10 minutes (or the one it is adding details to). Videos and documents create a job from their caption, but those files are not saved.
 
+**Forwarded messages and photos become one job.** Everything a number forwards to the jobs line within 2 minutes of the last item goes onto the same job: forwarded text is added to the details, photos are attached. About 7 seconds after the last item arrives, one reply goes out with a **Choose staff** list and a request for the title; the next message that number types (within 15 minutes) becomes the job's title. Photos sent with nothing typed under them join the same job. A forwarded item sent while adding details to a job is still treated as those details.
+
     Job: Install 4 cameras at Al Noor Cafe
     Customer: Ahmed 050 123 4567
     Address: Shop 3, Al Wasl Road
@@ -61,6 +63,6 @@ The normal WhatsApp Business app cannot hand messages to other software by itsel
 2. **Email sending:** Supabase's built-in email is limited to a few messages an hour. Connect your own SMTP (for example Resend) before adding many staff.
 
 ## Rebuilding from scratch
-Run `supabase/schema.sql`, then `supabase/schema-2-wa-actions.sql`, in the SQL editor, then:
+Run `supabase/schema.sql`, then `supabase/schema-2-wa-actions.sql`, then `supabase/schema-3-wa-bundles.sql`, in the SQL editor, then:
 
     supabase functions deploy whatsapp-webhook --no-verify-jwt
