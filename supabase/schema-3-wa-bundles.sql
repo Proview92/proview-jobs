@@ -4,7 +4,7 @@
 -- What the next typed message from a number is for: extra details, or the job's title.
 alter table public.pj_wa_pending add column kind text not null default 'details' check (kind in ('details', 'title'));
 
--- The job a number is currently forwarding things onto. It stays open for 2 minutes after the last item.
+-- The job a number is currently forwarding things onto. It stays open for 30 seconds after the last item.
 create table public.pj_wa_bundle (
   phone text primary key,
   job_id uuid not null references public.pj_jobs(id) on delete cascade,
@@ -45,7 +45,7 @@ begin
   end if;
   perform pg_advisory_xact_lock(hashtextextended('pj_wa_bundle:' || v_from, 0));
 
-  select * into b from public.pj_wa_bundle where phone = v_from and last_at > clock_timestamp() - interval '2 minutes';
+  select * into b from public.pj_wa_bundle where phone = v_from and last_at > clock_timestamp() - interval '30 seconds';
   if not found then
     if not v_create then return jsonb_build_object('ok', false, 'reason', 'none'); end if;
     r := public.pj_wa_ingest((p - 'trusted' - 'manager_id') || jsonb_build_object(
