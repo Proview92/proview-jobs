@@ -101,11 +101,14 @@ async function enter() {
   S.tab = 'jobs'; S.filter = 'open';
   render();
   live();
+  pushInit();
+  if (/[?&]job=/.test(location.search)) { openFromLink(location.href); try { history.replaceState(null, '', location.pathname); } catch (_) { /* cosmetic */ } }
 }
 async function signOut() {
   S.ready = false; S.me = null; S.job = null;
   $('#pnl-root').innerHTML = ''; closeModal();
   if (S.chan) { try { S.sb.removeChannel(S.chan); } catch (_) { /* gone already */ } S.chan = null; }
+  await pushForget();
   try { await S.sb.auth.signOut(); } catch (_) { /* signed out locally anyway */ }
   authScreen('in');
 }

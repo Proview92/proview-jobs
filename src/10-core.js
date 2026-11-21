@@ -69,6 +69,7 @@ async function q(promise) {
 }
 async function loadJobs() {
   S.jobs = await q(S.sb.from('pj_jobs').select('*, pj_job_tasks(id,done), pj_job_parts(id,used)').order('created_at', { ascending: false }).limit(1000)) || [];
+  if (typeof setBadge === 'function') setBadge();
 }
 async function loadPeople() {
   S.people = await q(S.sb.from('pj_people').select('*').order('name')) || [];

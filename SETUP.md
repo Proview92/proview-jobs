@@ -63,6 +63,15 @@ The normal WhatsApp Business app cannot hand messages to other software by itsel
 2. **Email sending:** Supabase's built-in email is limited to a few messages an hour. Connect your own SMTP (for example Resend) before adding many staff.
 
 ## Rebuilding from scratch
-Run `supabase/schema.sql`, then `supabase/schema-2-wa-actions.sql`, then `supabase/schema-3-wa-bundles.sql`, in the SQL editor, then:
+Run `supabase/schema.sql`, then `supabase/schema-2-wa-actions.sql`, `supabase/schema-3-wa-bundles.sql` and `supabase/schema-4-push.sql`, in the SQL editor, then:
 
     supabase functions deploy whatsapp-webhook --no-verify-jwt
+
+## Notifications on phones
+
+Each person turns notifications on for their own phone on the Account page (or the prompt on the jobs page). On an iPhone the app must first be on the Home Screen (Share, then "Add to Home Screen") and opened from that icon; iOS 16.4 or newer is needed.
+
+- Staff are told when a job is assigned to them. Managers are told when a job is created or completed. Nobody is told about their own action.
+- The number on the app icon is the jobs not yet completed: a manager's counts every open job, a staff member's counts their own. It is refreshed by each notification and whenever the app is opened.
+- The database tells the `push` function (`supabase/functions/push`, deployed with `--no-verify-jwt`) through a trigger on `pj_jobs`. The function makes its own key pair on first use and keeps it in `pj_private.pj_secrets`; nothing has to be pasted anywhere.
+- A subscription belongs to the web address it was made on. After moving the app to a new address, each person adds the app to their Home Screen again from the new address and turns notifications on again.

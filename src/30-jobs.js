@@ -36,6 +36,7 @@ function render() {
 }
 function renderMe() {
   $('#main').innerHTML = '<div class="card me"><span class="avatar big">' + initial(S.me.name) + '</span><b>' + esc(S.me.name) + '</b><span class="mut">' + esc(S.me.email) + '</span><br><span class="pill ' + (isMgr() ? 'in_progress' : 'open') + '" style="margin-top:10px">' + (isMgr() ? 'Manager' : 'Staff') + '</span></div>' +
+    pushCard() +
     '<div class="card"><h2>Put it on your home screen</h2><p class="mut">Open your browser menu and choose "Add to Home screen" (Android) or Share, then "Add to Home Screen" (iPhone). Proview Jobs then opens like any other app.</p></div>' +
     '<button class="btn bad wide" data-a="signout">Sign out</button>' +
     '<p style="text-align:center;margin-top:16px"><a href="privacy.html" target="_blank" rel="noopener" class="mut">Privacy policy</a></p>';
@@ -107,7 +108,7 @@ function renderJobs() {
     body = order.filter((g) => groups[g]).map((g) => '<div class="grp' + (g === 'Overdue' ? ' late' : '') + '">' + g + '<i>' + groups[g].length + '</i></div><div class="list">' + groups[g].map(jobCard).join('') + '</div>').join('');
   }
   const hadFocus = document.activeElement && document.activeElement.id === 'search';
-  $('#main').innerHTML =
+  $('#main').innerHTML = pushNudge() +
     '<div class="stats n' + tiles.length + '">' + tiles.map(([k, l]) => { const n = count(k); return '<button class="stat k-' + k + (S.filter === k ? ' on' : '') + (n ? '' : ' zero') + '" data-a="filter" data-k="' + k + '"' + (S.filter === k ? ' aria-pressed="true"' : '') + '><b>' + n + '</b><span>' + l + '</span></button>'; }).join('') + '</div>' +
     '<div class="lh"><h2>' + (mgr ? FLABEL[S.filter] : S.filter === 'open' ? 'To do' : FLABEL[S.filter]) + '<small class="mut">' + list.length + '</small></h2>' +
     (mgr ? '<button class="lnk" data-a="quick">' + ic('bolt') + 'Quick add</button>' : '') +

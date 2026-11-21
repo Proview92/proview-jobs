@@ -19,6 +19,10 @@ document.addEventListener('click', async (ev) => {
   if (a === 'finish-yes') { const n = $('#fin-notes').value; closeModal(); return jobProgress('done', n); }
   if (a === 'notes-save') return jobProgress(S.job.status, $('#notes').value);
   if (a === 'copy') return copyText($('#' + el.dataset.t).textContent);
+  if (a === 'push-on') return pushOn();
+  if (a === 'push-off') return pushOff();
+  if (a === 'push-test') return pushTest();
+  if (a === 'push-later') return pushLater();
   if (!isMgr()) return;
   if (a === 'job-new') return jobForm();
   if (a === 'job-edit') return jobForm(S.job);

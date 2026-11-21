@@ -168,3 +168,5 @@ pre.code{background:#0e1424;border:1px solid var(--line);border-radius:12px;padd
   .pnl{left:92px}.pnl-bar{left:92px}
   #toast{bottom:28px}
 }
+
+.nudge{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px}.nudge span{flex:1 1 180px;font-size:14px}.nudge .btn{padding:8px 14px}
